@@ -42,5 +42,5 @@ def make_one_hot(data):
 
 def prob2greedy(action_probs):
     action_probs = list(action_probs)
-    greedy = [np.argmax(np.array(action_p)) for action_p in action_probs]
+    greedy = np.array([np.argmax(np.array(action_p)) for action_p in action_probs])
     return greedy

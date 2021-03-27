@@ -18,8 +18,6 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 class GridWorld(object):
     def __init__(self, agent_num=256):
         self.agent_num = agent_num
-        self.states = np.random.randint(0, 16, size=(agent_num,))
-        self.dones = np.zeros(agent_num, dtype=np.bool)
         self.sas = {'00': 0, '01': 1, '02': 0, '03': 0,
                     '10': 0, '11': 2, '12': 1, '13': 1,
                     '20': 1, '21': 3, '22': 2, '23': 4,
@@ -40,31 +38,34 @@ class GridWorld(object):
                     }
         self.max_l = 50
         self.gamma = 0.9
-        self.reset()
 
-    def reset(self):
-        self.states = np.where(self.dones,
+    def reset(self, states=None, dones=None):
+        if states is not None:
+            assert dones is not None
+            states = np.where(dones,
                                np.random.randint(0, 16, size=(self.agent_num,)),
-                               self.states)
-        return self.states
+                               states)
+        else:
+            states = np.random.randint(0, 16, size=(self.agent_num,))
+        return states
 
-    def judge_done(self):
-        return np.where(self.states == 16,
+    def judge_done(self, states):
+        return np.where(states == 16,
                         np.ones(self.agent_num, dtype=np.bool),
                         np.zeros(self.agent_num, dtype=np.bool))
 
-    def step(self, actions, is_reset=True):
-        states_list = list(self.states)
+    def step(self, states, actions, is_reset=True):
+        states_list = list(states)
         actions_list = list(actions)
         # for i in range(16):
         #     actions_list.append(np.random.choice([0, 1, 2, 3], 1, p=action_prob[i])[0])
-        self.states = np.array([self.sas[str(s) + str(a)] for (s, a) in zip(states_list, actions_list)], dtype=np.int32)
+        next_states = np.array([self.sas[str(s) + str(a)] for (s, a) in zip(states_list, actions_list)], dtype=np.int32)
         rewards = np.array([1. if str(s) + str(a) == '152' else 0 for (s, a) in zip(states_list, actions_list)],
                            dtype=np.float32)
-        self.dones = self.judge_done()
+        dones = self.judge_done(next_states)
         if is_reset:
-            self.reset()
-        return self.states, rewards, self.dones
+            next_states = self.reset(next_states, dones)
+        return next_states, rewards, dones
 
     def value_estimate(self, action_prob, M):
         # action_prob: np.array([[p0, p1, p2, p4], ..., [p0, p1, p2, p4]])
@@ -106,12 +107,12 @@ class GridWorld(object):
         action_prob = make_one_hot(optimal_actions)
         return action_prob
 
-    def render(self, values=None, action_prob=None, logdir=None, iter=None):
+    def render(self, values=None, action_prob=None, fig_name=None, logdir=None, iter=None):
         l = 3
         big_square_l = l*6
         big_square_w = l*4
         linewidth = 1
-        fig = plt.figure()
+        fig = plt.figure(fig_name)
         for ax in fig.get_axes():
             ax.axis('off')
         ax = plt.axes([0., 0, 1.1, 1])
