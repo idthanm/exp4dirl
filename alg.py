@@ -7,15 +7,21 @@
 # @FileName: alg.py
 # =====================================
 
+import datetime
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn as nn
-import datetime
-import time
-import os
-import numpy as np
+from tensorboardX import SummaryWriter
+
 from env import GridWorld
 from utils import make_one_hot, prob2greedy
-from tensorboardX import SummaryWriter
+
+sns.set(style="darkgrid")
 
 
 class PolicyIteration(object):
@@ -35,21 +41,23 @@ class PolicyIteration(object):
         self.action_prob = self.env.pim(self.values.copy())
 
     def train(self):
+        keyparams2store = []
         self.env.render(self.values.copy(), self.action_prob.copy(),
                         logdir=self.logdir, iter=self.iteration)
-        done_train = False
-        while not done_train:
-            prev_values = self.values.copy()
-            prev_action_prob = self.action_prob.copy()
+        keyparams2store.append(self.values.mean())
+        for _ in range(15):
+            # prev_values = self.values.copy()
+            # prev_action_prob = self.action_prob.copy()
 
             self.policy_improvement()
             self.policy_evaluation()
             self.iteration += 1
             self.env.render(self.values.copy(), self.action_prob.copy(),
                             logdir=self.logdir, iter=self.iteration)
-
-            done_train = True if np.max(self.values - prev_values) < 0.01 and \
-                                 np.max(self.action_prob - prev_action_prob) < 0.01 else False
+            keyparams2store.append(self.values.mean())
+            np.save(self.logdir + '/data.npy', keyparams2store)
+            # done_train = True if np.max(self.values - prev_values) < 0.01 and \
+            #                      np.max(self.action_prob - prev_action_prob) < 0.01 else False
 
 
 def one_hot_encoding(batch_size, batch_data):
@@ -160,22 +168,25 @@ class PIwithVapprfunc(object):
         self.action_prob = self.env.pim(self.values.copy())
 
     def train(self):
+        keyparams2store = []
         self.env.render(self.values.copy(), self.action_prob.copy(),
                         logdir=self.logdir, iter=self.iteration)
-        done_train = False
-        while not done_train:
+        keyparams2store.append(self.values.mean())
+        for _ in range(15):
             self.policy_improvement()
             self.train_value()
             self.iteration += 1
             self.env.render(self.values.copy(), self.action_prob.copy(),
                             logdir=self.logdir, iter=self.iteration)
+            keyparams2store.append(self.values.mean())
+            np.save(self.logdir + '/data.npy', keyparams2store)
 
 
 class PIwithVandP(object):
     def __init__(self, logdir=None):
         self.logdir = logdir
         self.valuenet = ValueNet()
-        self.valueopt = torch.optim.Adam(params=self.valuenet.parameters(), lr=0.003)
+        self.valueopt = torch.optim.Adam(params=self.valuenet.parameters(), lr=0.00003)
         self.policynet = PointwisePolicyNet()
         self.policyopt = torch.optim.Adam(params=self.policynet.parameters(), lr=0.3)
         self.action_prob = make_one_hot(np.zeros((16,), dtype=np.int32))
@@ -251,22 +262,25 @@ class PIwithVandP(object):
                 self.env.render(self.values.copy(), self.action_prob.copy(), fig_name='value training')
 
     def train(self):
+        keyparams2store = []
         self.env.render(self.values.copy(), self.action_prob.copy(),
                         fig_name='init', logdir=self.logdir, iter=self.iteration)
-        done_train = False
-        while not done_train:
+        keyparams2store.append(self.values.mean())
+        for _ in range(15):
             self.train_policy()
             self.train_value()
             self.iteration += 1
             self.env.render(self.values.copy(), self.action_prob.copy(),
                             fig_name='one iter end', logdir=self.logdir, iter=self.iteration)
+            keyparams2store.append(self.values.mean())
+            np.save(self.logdir + '/data.npy', keyparams2store)
 
 
 class DIRL(object):
     def __init__(self, is_true_value, is_stationary, logdir=None):
         self.logdir = logdir
         self.valuenet = ValueNet()
-        self.valueopt = torch.optim.Adam(params=self.valuenet.parameters(), lr=0.003)
+        self.valueopt = torch.optim.Adam(params=self.valuenet.parameters(), lr=0.00003)
         self.policynet = PointwisePolicyNet()
         self.policyopt = torch.optim.Adam(params=self.policynet.parameters(), lr=0.3)
         self.action_prob = self.policynet().detach().numpy()
@@ -375,5 +389,47 @@ def test_one_hot():
     print(a, out)
 
 
+def plot_valuemean():
+    vm_tab = np.load('./results/toplot/{}/{}/data.npy'.format('pi_tabular', '2021-03-29-14-13-23'))
+    vm_vapp = np.load('./results/toplot/{}/{}/data.npy'.format('pi_vapprfunc', '2021-03-29-14-13-44'))
+    vm_vandp = np.load('./results/toplot/{}/{}/data.npy'.format('pi_vandp', '2021-03-29-14-14-11'))
+    total_df = pd.DataFrame(dict(alg='tabular value and policy', value_mean=vm_tab, iteration=np.arange(16)))
+    # total_df.append([pd.DataFrame(dict(alg='approximate value, tabular policy', value_mean=vm_vapp, iteration=np.arange(16))),
+    #                  pd.DataFrame(dict(alg='approximate value and policy', value_mean=vm_vandp, iteration=np.arange(16)))],
+    #                  ignore_index=True)
+    total_df = pd.DataFrame(dict(alg='approximate value, tabular policy', value_mean=vm_vapp, iteration=np.arange(16)))
+
+    f1 = plt.figure(1)
+    ax1 = f1.add_axes([0.155, 0.12, 0.82, 0.86])
+    sns.lineplot(x="iteration", y="value_mean", hue="alg", data=total_df, linewidth=2, palette="bright")
+    ax1.set_ylabel('Value mean', fontsize=15)
+    ax1.set_xlabel("Iteration", fontsize=15)
+    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=15)
+    plt.show()
+    print(np.square(vm_tab-vm_vapp).mean(), np.square(vm_vapp-vm_vandp).mean(), np.square(vm_tab-vm_vandp).mean(), vm_tab)
+
+
+def cal_mean_and_std():
+    vm_tab = np.load('./results/toplot/{}/{}/data.npy'.format('pi_tabular', '2021-03-29-14-13-23'))
+    vandp_error = []
+    for vandp_dir in os.listdir('./results/toplot/pi_vandp'):
+        vm_vandp = np.load('./results/toplot/pi_vandp/' + vandp_dir + '/data.npy')
+        vandp_error.append(np.square(vm_vandp - vm_tab))
+    vandp_mean = np.array(vandp_error).mean(axis=0)
+    vandp_var = np.array(vandp_error).std(axis=0)
+
+    vappr_error = []
+    for vappr_dir in os.listdir('./results/toplot/pi_vapprfunc'):
+        vm_vappr = np.load('./results/toplot/pi_vapprfunc/' + vappr_dir + '/data.npy')
+        vappr_error.append(np.square(vm_vappr - vm_tab))
+    vappr_mean = np.array(vappr_error).mean(axis=0)
+    vappr_var = np.array(vappr_error).std(axis=0)
+
+    print('vandp_mean: ', vandp_mean, '\n', 'vandp_std*2: ', 2*vandp_var, '\n'
+          'vappr_mean: ', vappr_mean, '\n', 'vappr_std*2: ', 2*vappr_var, '\n')
+
+
 if __name__ == '__main__':
-    main('pi_vandp')
+    # main('pi_vandp')  # pi_tabular pi_vapprfunc pi_vandp
+    cal_mean_and_std()

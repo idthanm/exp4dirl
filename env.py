@@ -113,11 +113,17 @@ class GridWorld(object):
         big_square_w = l*4
         linewidth = 1
         fig = plt.figure(fig_name)
-        for ax in fig.get_axes():
-            ax.axis('off')
-        ax = plt.axes([0., 0, 1.1, 1])
+        ax = plt.axes([0, 0, 1, 1])
         ax.axis('off')
         ax.axis("equal")
+
+        # fig = plt.figure(fig_name, figsize=(6, 4))
+        # ax = plt.axes()
+        # plt.gca().set_axis_off()
+        # plt.subplots_adjust(top=1., bottom=0, right=1, left=0, hspace=0, wspace=0)
+        # plt.margins(0, 0)
+        # plt.gca().xaxis.set_major_locator(plt.NullLocator())
+        # plt.gca().yaxis.set_major_locator(plt.NullLocator())
 
         def draw_rotate_rec(x, y, a, l, w, c, face='none',):
             bottom_left_x, bottom_left_y, _ = rotate_coordination(-l / 2, w / 2, 0, -a)
@@ -190,8 +196,8 @@ class GridWorld(object):
 
         if logdir is not None:
             plt.savefig(logdir + '/iteration{}.pdf'.format(iter))
-
         plt.show()
+        plt.close(fig)
 
 
 def test_grid_world():
@@ -199,11 +205,11 @@ def test_grid_world():
     states = grid_env.reset()
     for _ in range(10):
         actions = np.random.randint(0, 4, size=(1024,))
-        next_states, rewards, dones = grid_env.step(actions)
+        next_states, rewards, dones = grid_env.step(states.copy(), actions)
         values = np.random.random(size=(16,))
         action_prob = make_one_hot(np.random.randint(0, 4, size=(16,)))
-        grid_env.render(values, action_prob)
-        print(next_states)
+        grid_env.render(None, None)
+        states = next_states.copy()
 
 
 if __name__ == '__main__':
