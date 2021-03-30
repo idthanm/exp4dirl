@@ -7,7 +7,9 @@
 # @FileName: alg.py
 # =====================================
 
+import argparse
 import datetime
+import json
 import os
 
 import matplotlib.pyplot as plt
@@ -277,24 +279,34 @@ class PIwithVandP(object):
 
 
 class DIRL(object):
-    def __init__(self, is_true_value, is_stationary, logdir=None):
+    def __init__(self, is_true_value, is_stationary, value_iter=1, value_lr=0.00003, policy_lr=0.3,
+                 batch_size=1024, true_value_estimate_sample_num=64, train_iter=80, valuenet_seed=None,
+                 policynet_seed=None, is_show_fig=True, logdir=None):
         self.logdir = logdir
+        self.batch_size = batch_size
+        self.value_iter = value_iter
+        self.train_iter = train_iter
+        self.is_show_fig = is_show_fig
+        self.true_value_estimate_sample_num = true_value_estimate_sample_num
+        if valuenet_seed is not None:
+            torch.manual_seed(valuenet_seed)
         self.valuenet = ValueNet()
-        self.valueopt = torch.optim.Adam(params=self.valuenet.parameters(), lr=0.00003)
+        self.valueopt = torch.optim.Adam(params=self.valuenet.parameters(), lr=value_lr)
+        if policynet_seed is not None:
+            torch.manual_seed(policynet_seed)
         self.policynet = PointwisePolicyNet()
-        self.policyopt = torch.optim.Adam(params=self.policynet.parameters(), lr=0.3)
+        self.policyopt = torch.optim.Adam(params=self.policynet.parameters(), lr=policy_lr)
         self.action_prob = self.policynet().detach().numpy()
-        self.env = GridWorld(1024)
+        self.env = GridWorld(batch_size)
         self.gamma = 0.9
         self.iteration = 0
         self.values = np.zeros(16, np.float32)
-        self.true_values = None
+        self.true_values = self.env.value_estimate(self.action_prob, self.true_value_estimate_sample_num)
         self.is_debug = False
         self.is_true_value = is_true_value
         self.is_stationary = is_stationary
         self.states = self.env.reset() if is_stationary else np.concatenate([np.arange(16) for _ in range(64)], 0)
         self.writer = SummaryWriter(self.logdir)
-        self.is_off_policy = False
 
     def train_policy_off(self):
         self.policyopt.zero_grad()
@@ -341,10 +353,10 @@ class DIRL(object):
             self.env.render(self.values.copy(), self.action_prob.copy(), fig_name='policy training')
 
     def train_value(self):
-        self.true_values = self.env.value_estimate(self.action_prob, 64)
+        self.true_values = self.env.value_estimate(self.action_prob, self.true_value_estimate_sample_num)
         y = torch.from_numpy(self.true_values.copy())
 
-        for _ in range(1):
+        for _ in range(self.value_iter):
             self.valueopt.zero_grad()
             encode_x = one_hot_encoding(16, torch.from_numpy(np.arange(16)))
             value_pred = self.valuenet(encode_x)
@@ -356,17 +368,101 @@ class DIRL(object):
                 self.env.render(self.values.copy(), self.action_prob.copy(), fig_name='value training')
 
     def train(self):
-        for _ in range(80):
+        keyparams2store = {'true_value_mean': [], 'value_mean': [], 'stationary_true_value_mean': [],
+                           'stationary_value_mean': [], 'policy_entropy': []}
+        self.env.render(self.true_values.copy(), self.action_prob.copy(),
+                        fig_name='true one iter end', logdir=self.logdir, iter='_true' + str(self.iteration),
+                        is_show=self.is_show_fig)
+        self.env.render(self.values.copy(), self.action_prob.copy(),
+                        fig_name='appr one iter end', logdir=self.logdir, iter='_appr' + str(self.iteration),
+                        is_show=self.is_show_fig)
+
+        for _ in range(self.train_iter):
             print('ite{}'.format(self.iteration))
             self.iteration += 1
             self.train_value()
             self.train_policy()
-            self.writer.add_scalar('value_mean', self.true_values.mean(), global_step=self.iteration)
+            # self.writer.add_scalar('value_mean', self.true_values.mean(), global_step=self.iteration)
             self.env.render(self.true_values.copy(), self.action_prob.copy(),
-                            fig_name='one iter end', logdir=self.logdir, iter=self.iteration)
+                            fig_name='one iter end', logdir=self.logdir, iter='_true' + str(self.iteration),
+                            is_show=self.is_show_fig)
+            self.env.render(self.values.copy(), self.action_prob.copy(),
+                            fig_name='one iter end', logdir=self.logdir, iter='_appr' + str(self.iteration),
+                            is_show=self.is_show_fig)
+            keyparams2store['true_value_mean'].append(self.true_values.mean())
+            keyparams2store['value_mean'].append(self.values.mean())
+            stationary_states = self.generate_stationary_state(1024)
+            truevalues4stationarystates = self.true_values[stationary_states]
+            values4stationarystates = self.values[stationary_states]
+            keyparams2store['stationary_true_value_mean'].append(truevalues4stationarystates.mean())
+            keyparams2store['stationary_value_mean'].append(values4stationarystates.mean())
+            keyparams2store['policy_entropy'].append(self.policy_entropy())
+            np.save(self.logdir + '/data.npy', keyparams2store)
+
+    def generate_stationary_state(self, batch_size):
+        env = GridWorld(16)
+        all_states = []
+        states = np.arange(16)
+        all_states.append(states.copy())
+        ite = batch_size/16
+
+        action_probs = self.policynet()
+        action_probs_detached = action_probs.detach().numpy()
+        actions = [np.random.choice([0, 1, 2, 3], 1, p=action_probs_detached[state])[0] for state in self.states]
+
+        for _ in range(int(ite-1)):
+            states, _, _ = env.step(states.copy(), actions.copy(), is_reset=True)
+            all_states.append(states.copy())
+        all_states = np.concatenate(all_states, 0)
+        return all_states
+
+    def sample_dvf(self, batch_size, gamma, ite2sample):
+        action_probs = self.policynet()
+        action_probs_detached = action_probs.detach().numpy()
+        actions = [np.random.choice([0, 1, 2, 3], 1, p=action_probs_detached[state])[0] for state in self.states]
+        if gamma == 0:
+            assert batch_size % 16 == 0
+            return np.concatenate([np.arange(16) for _ in range(int(batch_size/16))], 0)
+        elif gamma == 1:
+            assert batch_size % ite2sample == 0
+            assert int(batch_size/ite2sample) % 16 == 0
+            init_size = int(batch_size/ite2sample)
+            states = np.concatenate([np.arange(16) for _ in range(int(init_size/16))], 0)
+            env = GridWorld(init_size)
+            all_states = [states.copy()]
+            for _ in range(int(ite2sample - 1)):
+                states, _, _ = env.step(states.copy(), actions.copy(), is_reset=True)
+                all_states.append(states.copy())
+            all_states = np.concatenate(all_states, 0)
+            return all_states
+        else:
+            assert 0 < gamma < 1
+            init_size = int(batch_size * (1 - gamma) / (1 - pow(gamma, ite2sample)))
+            states = np.random.choice(np.arange(16), size=(init_size,))
+            env = GridWorld(init_size)
+            all_states = [states.copy()]
+            for i in range(int(ite2sample - 1)):
+                states, _, _ = env.step(states.copy(), actions.copy(), is_reset=True)
+                states2append = np.random.choice(states.copy(), size=(init_size*pow(gamma, i+1),), replace=False)
+                all_states.append(states2append.copy())
+            tmp = np.concatenate(all_states, 0)
+            resi = batch_size - len(tmp)
+            states, _, _ = env.step(states.copy(), actions.copy(), is_reset=True)
+            states2append = np.random.choice(states.copy(), size=(resi,), replace=False)
+            all_states.append(states2append.copy())
+            all_states = np.concatenate(all_states, 0)
+            return all_states
+
+    def policy_entropy(self):
+        action_probs = self.policynet()
+        action_probs_detached = action_probs.detach().numpy()
+        entropy_list = []
+        for action_prob in action_probs_detached:
+            entropy_list.append(-sum([prob*np.log(prob+1e-9) for prob in action_prob]))
+        return np.mean(np.array(entropy_list))
 
 
-def main(alg):
+def exp1(alg):
     time_now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     logdir = './results/{alg}/{time}'.format(alg=alg, time=time_now)
     os.makedirs(logdir)
@@ -374,11 +470,9 @@ def main(alg):
         learner = PolicyIteration(logdir=logdir)
     elif alg == 'pi_vapprfunc':
         learner = PIwithVapprfunc(logdir=logdir)
-    elif alg == 'pi_vandp':
-        learner = PIwithVandP(logdir=logdir)
     else:
-        assert alg == 'dirl'
-        learner = DIRL(is_true_value=False, is_stationary=True, logdir=logdir)
+        assert alg == 'pi_vandp'
+        learner = PIwithVandP(logdir=logdir)
 
     learner.train()
 
@@ -394,11 +488,9 @@ def plot_valuemean():
     vm_vapp = np.load('./results/toplot/{}/{}/data.npy'.format('pi_vapprfunc', '2021-03-29-14-13-44'))
     vm_vandp = np.load('./results/toplot/{}/{}/data.npy'.format('pi_vandp', '2021-03-29-14-14-11'))
     total_df = pd.DataFrame(dict(alg='tabular value and policy', value_mean=vm_tab, iteration=np.arange(16)))
-    # total_df.append([pd.DataFrame(dict(alg='approximate value, tabular policy', value_mean=vm_vapp, iteration=np.arange(16))),
-    #                  pd.DataFrame(dict(alg='approximate value and policy', value_mean=vm_vandp, iteration=np.arange(16)))],
-    #                  ignore_index=True)
-    total_df = pd.DataFrame(dict(alg='approximate value, tabular policy', value_mean=vm_vapp, iteration=np.arange(16)))
-
+    total_df.append([pd.DataFrame(dict(alg='approximate value, tabular policy', value_mean=vm_vapp, iteration=np.arange(16))),
+                     pd.DataFrame(dict(alg='approximate value and policy', value_mean=vm_vandp, iteration=np.arange(16)))],
+                     ignore_index=True)
     f1 = plt.figure(1)
     ax1 = f1.add_axes([0.155, 0.12, 0.82, 0.86])
     sns.lineplot(x="iteration", y="value_mean", hue="alg", data=total_df, linewidth=2, palette="bright")
@@ -430,6 +522,118 @@ def cal_mean_and_std():
           'vappr_mean: ', vappr_mean, '\n', 'vappr_std*2: ', 2*vappr_var, '\n')
 
 
+def build_di_indi_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--is_true_value', type=bool, default=True)
+    parser.add_argument('--is_stationary', type=bool, default=True)
+    parser.add_argument('--value_iter', type=int, default=1)
+    parser.add_argument('--value_lr', type=float, default=0.003)
+    parser.add_argument('--policy_lr', type=float, default=0.3)
+    parser.add_argument('--true_value_estimate_sample_num', type=int, default=64)
+    parser.add_argument('--train_iter', type=int, default=30)
+    parser.add_argument('--valuenet_seed', type=int, default=3)
+    parser.add_argument('--policynet_seed', type=int, default=4)
+    parser.add_argument('--is_show_fig', type=bool, default=False)
+    time_now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    logdir = './results/dirl/{time}'.format(time=time_now)
+    parser.add_argument('--logdir', type=str, default=logdir)
+    return parser.parse_args()
+
+
+def exp2():
+    args = build_di_indi_parser()
+    os.makedirs(args.logdir)
+    with open(args.logdir + '/config.json', 'w', encoding='utf-8') as f:
+        json.dump(vars(args), f, ensure_ascii=False, indent=4)
+    learner = DIRL(**vars(args))
+    learner.train()
+
+
+def grab_dirl_data():
+    di_dir = './results/toplot/dirl/di/'
+    indi_dir = './results/toplot/dirl/indi/'
+    df_list = []
+    for run_num, d in enumerate(os.listdir(di_dir)):
+        data = np.load(di_dir + d + '/data.npy', allow_pickle=True).item()
+        df = pd.DataFrame({'true_value_mean': data['true_value_mean'],
+                           'value_mean': data['value_mean'],
+                           'stationary_true_value_mean': data['stationary_true_value_mean'],
+                           'stationary_value_mean': data['stationary_value_mean'],
+                           'policy_entropy': data['policy_entropy'],
+                           'iteration': np.arange(len(data['policy_entropy'])),
+                           'run_num': run_num,
+                           'type': 'direct'
+                           })
+        df_list.append(df)
+    for run_num, d in enumerate(os.listdir(indi_dir)):
+        data = np.load(di_dir + d + '/data.npy', allow_pickle=True).item()
+        df = pd.DataFrame({'true_value_mean': data['true_value_mean'],
+                           'value_mean': data['value_mean'],
+                           'stationary_true_value_mean': data['stationary_true_value_mean'],
+                           'stationary_value_mean': data['stationary_value_mean'],
+                           'policy_entropy': data['policy_entropy'],
+                           'iteration': np.arange(len(data['policy_entropy'])),
+                           'run_num': run_num,
+                           'type': 'indirect'
+                           })
+        df_list.append(df)
+    total_df = df_list[0].append(df_list[1:]) if len(df_list) > 1 else df_list[0]
+    f1 = plt.figure(1)
+    ax1 = f1.add_axes([0.155, 0.12, 0.82, 0.86])
+    sns.lineplot(x="iteration", y="true_value_mean", hue="type", data=total_df, linewidth=2, palette="bright")
+    ax1.set_ylabel('True value mean', fontsize=15)
+    ax1.set_xlabel("Iteration", fontsize=15)
+    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=15)
+
+    f2 = plt.figure(2)
+    ax2 = f2.add_axes([0.155, 0.12, 0.82, 0.86])
+    sns.lineplot(x="iteration", y="value_mean", hue="type", data=total_df, linewidth=2, palette="bright")
+    ax2.set_ylabel('Approximate value mean', fontsize=15)
+    ax2.set_xlabel("Iteration", fontsize=15)
+    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=15)
+
+    f3 = plt.figure(3)
+    ax3 = f3.add_axes([0.155, 0.12, 0.82, 0.86])
+    sns.lineplot(x="iteration", y="stationary_true_value_mean", hue="type", data=total_df, linewidth=2, palette="bright")
+    ax3.set_ylabel('True value mean (stationary)', fontsize=15)
+    ax3.set_xlabel("Iteration", fontsize=15)
+    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=15)
+
+    f4 = plt.figure(4)
+    ax4 = f4.add_axes([0.155, 0.12, 0.82, 0.86])
+    sns.lineplot(x="iteration", y="stationary_value_mean", hue="type", data=total_df, linewidth=2,
+                 palette="bright")
+    ax4.set_ylabel('Approximate value mean (stationary)', fontsize=15)
+    ax4.set_xlabel("Iteration", fontsize=15)
+    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=15)
+
+    f5 = plt.figure(5)
+    ax5 = f5.add_axes([0.155, 0.12, 0.82, 0.86])
+    sns.lineplot(x="iteration", y="policy_entropy", hue="type", data=total_df, linewidth=2,
+                 palette="bright")
+    ax5.set_ylabel('Policy entropy', fontsize=15)
+    ax5.set_xlabel("Iteration", fontsize=15)
+    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=15)
+
+    plt.show()
+
+
+def test_npload():
+    a = {'1': [1,2,24,], '2': [2.,4.,7.]}
+    np.save('./data.npy', a)
+    b = np.load('./data.npy', allow_pickle=True)
+    c = b.item()
+    print(c['1'])
+    print(c)
+
+
 if __name__ == '__main__':
-    # main('pi_vandp')  # pi_tabular pi_vapprfunc pi_vandp
-    cal_mean_and_std()
+    # exp1('pi_tabular')  # pi_tabular pi_vapprfunc pi_vandp
+    exp2()
+    # grab_dirl_data()
+    # cal_mean_and_std()

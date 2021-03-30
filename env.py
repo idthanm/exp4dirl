@@ -107,7 +107,7 @@ class GridWorld(object):
         action_prob = make_one_hot(optimal_actions)
         return action_prob
 
-    def render(self, values=None, action_prob=None, fig_name=None, logdir=None, iter=None):
+    def render(self, values=None, action_prob=None, fig_name=None, logdir=None, iter=None, is_show=True):
         l = 3
         big_square_l = l*6
         big_square_w = l*4
@@ -196,7 +196,8 @@ class GridWorld(object):
 
         if logdir is not None:
             plt.savefig(logdir + '/iteration{}.pdf'.format(iter))
-        plt.show()
+        if is_show:
+            plt.show()
         plt.close(fig)
 
 
