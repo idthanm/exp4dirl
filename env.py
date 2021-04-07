@@ -112,18 +112,12 @@ class GridWorld(object):
         big_square_l = l*6
         big_square_w = l*4
         linewidth = 1
-        fig = plt.figure(fig_name)
-        ax = plt.axes([0, 0, 1, 1])
-        ax.axis('off')
+        fig = plt.figure(fig_name, figsize=(6.5, 4))
+        ax = plt.axes()
+        plt.gca().set_axis_off()
+        plt.subplots_adjust(top=1., bottom=0, right=0.94, left=0, hspace=0, wspace=0)
+        plt.margins(0, 0)
         ax.axis("equal")
-
-        # fig = plt.figure(fig_name, figsize=(6, 4))
-        # ax = plt.axes()
-        # plt.gca().set_axis_off()
-        # plt.subplots_adjust(top=1., bottom=0, right=1, left=0, hspace=0, wspace=0)
-        # plt.margins(0, 0)
-        # plt.gca().xaxis.set_major_locator(plt.NullLocator())
-        # plt.gca().yaxis.set_major_locator(plt.NullLocator())
 
         def draw_rotate_rec(x, y, a, l, w, c, face='none',):
             bottom_left_x, bottom_left_y, _ = rotate_coordination(-l / 2, w / 2, 0, -a)
@@ -160,6 +154,9 @@ class GridWorld(object):
                 '8': (-0.5*l, 1.5*l), '9': (0.5*l, 1.5*l), '10': (0.5*l, 0.5*l), '11': (1.5*l, 0.5*l),
                 '12': (2.5*l, 1.5*l), '13': (2.5*l, 0.5*l), '14': (2.5*l, -0.5*l), '15': (2.5*l, -1.5*l)}
 
+        # # plot num
+        # for i in range(16):
+        #     plt.text(i2xy[str(i)][0]-0.3, i2xy[str(i)][1]-0.2, str(i), fontsize=20)
 
         fontsize = 10
         if action_prob is not None:
@@ -188,14 +185,13 @@ class GridWorld(object):
                                            facecolor=c,
                                            linewidth=linewidth))
 
-            cax, _ = cbar.make_axes(ax)
-            cax.axis('off')
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.)
             cb2 = cbar.ColorbarBase(cax, cmap=pl.cm.Set2, norm=normal)
+            cb2.ax.tick_params(labelsize=10)
 
         if logdir is not None:
-            plt.savefig(logdir + '/iteration{}.pdf'.format(iter))
+            plt.savefig(logdir + '/iteration{}.png'.format(iter))
         if is_show:
             plt.show()
         plt.close(fig)
